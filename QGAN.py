@@ -1,7 +1,6 @@
 import math
 import random
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import pennylane as qml
@@ -11,7 +10,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
-from torch.utils.data import Dataset, DataLoader
+from torchvision.datasets import MNIST
 
 from torchmetrics.image.fid import FrechetInceptionDistance
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
@@ -30,10 +29,9 @@ def image_prep(images, target_size=32, lpips=False):
     # RGB
     images = images.repeat(1, 3, 1, 1)
 
-    # Upscale
-    images = torch.nn.functional.interpolate(images, size=(target_size, target_size), mode='bilinear', align_corners=False)
-
     if lpips:
+        images = torch.nn.functional.interpolate(images, size=(target_size, target_size), mode='bilinear',
+                                                 align_corners=False)
         images = images.clamp(0, 1).float()
     else:
         images = (images * 255).clamp(0, 255).byte()
@@ -42,52 +40,24 @@ def image_prep(images, target_size=32, lpips=False):
 
 
 ######################################################################
-# Data (Pytorch dataloader for the Optical Recognition of Handwritten Digits Data Set)
+# Data (MNIST dataset filtered for zeros)
 ######################################################################
 
-class DigitsDataset(Dataset):
-
-    def __init__(self, csv_file, label=0, transform=None):
-        self.csv_file = csv_file
-        self.transform = transform
-        self.df = self.filter_by_label(label)
-
-    def filter_by_label(self, label):
-        df = pd.read_csv(self.csv_file)
-        df = df.loc[df.iloc[:, -1] == label]
-        return df
-
-    def __len__(self):
-        return len(self.df)
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        image = self.df.iloc[idx, :-1] / 16
-        image = np.array(image)
-        image = image.astype(np.float32).reshape(8, 8)
-
-        if self.transform:
-            image = self.transform(image)
-
-        return image, 0
-
-######################################################################
 # Variables and dataloader
-######################################################################
-
-image_size = 8  # Height / width of the square images
+image_size = 16
 batch_size = 1
 
-transform = transforms.Compose([transforms.ToTensor()])
-dataset = DigitsDataset(csv_file="./dataset/optdigits.tra", transform=transform)
+transform = transforms.Compose([transforms.ToTensor(),transforms.Resize((16, 16)),])
+
+full_dataset = MNIST(root='./data', train=True, download=True, transform=transform)
+indices = [i for i, (_, label) in enumerate(full_dataset) if label == 0]
+dataset = torch.utils.data.Subset(full_dataset, indices)
+
 dataloader = torch.utils.data.DataLoader(
     dataset, batch_size=batch_size, shuffle=True, drop_last=True
 )
 
-
-## Let's visualize some of the data.
+# # Let's visualize some of the data.
 #
 # plt.figure(figsize=(8,2))
 #
@@ -129,7 +99,7 @@ class Discriminator(nn.Module):
 ######################################################################
 
 # Quantum variables
-n_qubits = 5  # Total number of qubits
+n_qubits = 7  # Total number of qubits
 n_a_qubits = 1  # Number of ancillary qubits
 q_depth = 6  # Depth of the parameterised quantum circuit
 n_generators = 4  # Number of subgenerators for the patch method
@@ -215,7 +185,7 @@ discriminator = Discriminator().to(device)
 generator = PatchQuantumGenerator(n_generators).to(device)
 
 # Metrics
-fid_metric = FrechetInceptionDistance(feature=64, normalize=True).to(device)
+fid_metric = FrechetInceptionDistance(feature=192, normalize=True).to(device)
 lpips_metric = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).to(device)
 
 #Binary cross entropy
@@ -229,10 +199,10 @@ fake_labels = torch.full((batch_size,), 0.0, dtype=torch.float, device=device)
 
 fixed_noise = torch.rand(8, n_qubits, device=device) * math.pi / 2
 
-# Collect 100 real images for metrics calculation
+# Collect 1000 real images for metrics calculation
 real_images = []
 for i, (data, _) in enumerate(dataloader):
-    if i >= 100:
+    if i >= 1000:
         break
     real_images.append(data)
 
@@ -288,14 +258,14 @@ while True:
 
                 # Generate fake images for metrics
                 fake_images = []
-                for _ in range(100):
-                    noise = torch.rand(1, n_qubits, device=device) * math.pi / 2
+                for _ in range(1000):
+                    noise = torch.rand(batch_size, n_qubits, device=device) * math.pi / 2
                     fake_img = generator(noise).view(1, 1, image_size, image_size)
-                    fake_images.append(fake_img.cpu().detach())
+                    fake_images.append(fake_img.detach())
 
                 fake_images = torch.cat(fake_images, dim=0)
                 fake_images_fid = image_prep(fake_images).to(device)
-                fake_images_lpips = image_prep(fake_images, lpips=True).to(device)
+                fake_images_lpips = image_prep(fake_images[:200], lpips=True).to(device)
 
                 # Update FID
                 fid_metric.update(fake_images_fid, real=False)
@@ -327,8 +297,8 @@ while True:
 # Plot results
 ######################################################################
 
-fig = plt.figure(figsize=(10, 5))
-outer = gridspec.GridSpec(5, 2, wspace=0.1)
+fig = plt.figure(figsize=(10, 10))
+outer = gridspec.GridSpec(10, 2, wspace=0.2)
 
 for i, images in enumerate(results):
     inner = gridspec.GridSpecFromSubplotSpec(1, images.size(0),
