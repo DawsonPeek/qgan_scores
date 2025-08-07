@@ -22,7 +22,7 @@ np.random.seed(seed)
 random.seed(seed)
 
 # Parameters
-image_size = 28
+image_size = 32
 batch_size = 1
 
 
@@ -150,9 +150,6 @@ class PatchQuantumGenerator(nn.Module):
 
             images = torch.cat((images, patches), 1)
 
-        total_pixels = image_size * image_size  # 784
-        images = images[:, :total_pixels]
-
         return images
 
 
@@ -164,7 +161,7 @@ def main(args):
     print(f"Starting training with arguments: {args}")
 
     # Setup MNIST dataset
-    transform = transforms.Compose([transforms.ToTensor()])
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Resize((32, 32))])
 
     full_dataset = MNIST(root='/hpc/archive/G_QSLAB/emanuele.maffezzoli/data/', train=True, download=True,
                          transform=transform)
