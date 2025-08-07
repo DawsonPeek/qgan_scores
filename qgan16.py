@@ -7,6 +7,7 @@ import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision
 import torchvision.transforms as transforms
 from torchvision.datasets import MNIST
 from torchvision.utils import make_grid
@@ -22,7 +23,7 @@ np.random.seed(seed)
 random.seed(seed)
 
 # Parameters
-image_size = 28
+image_size = 16
 batch_size = 1
 
 
@@ -79,7 +80,7 @@ class Discriminator(nn.Module):
 ######################################################################
 
 # Quantum variables
-n_qubits = 9  # Total number of qubits
+n_qubits = 7  # Total number of qubits
 n_a_qubits = 1  # Number of ancillary qubits
 q_depth = 6  # Depth of the parameterised quantum circuit
 n_generators = 4  # Number of subgenerators for the patch method
@@ -150,9 +151,6 @@ class PatchQuantumGenerator(nn.Module):
 
             images = torch.cat((images, patches), 1)
 
-        total_pixels = image_size * image_size  # 784
-        images = images[:, :total_pixels]
-
         return images
 
 
@@ -164,10 +162,9 @@ def main(args):
     print(f"Starting training with arguments: {args}")
 
     # Setup MNIST dataset
-    transform = transforms.Compose([transforms.ToTensor()])
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Resize((16, 16))])
 
-    full_dataset = MNIST(root='/hpc/archive/G_QSLAB/emanuele.maffezzoli/data/', train=True, download=True,
-                         transform=transform)
+    full_dataset = MNIST(root='/hpc/archive/G_QSLAB/emanuele.maffezzoli/data/', train=True, download=True, transform=transform)
     indices = [i for i, (_, label) in enumerate(full_dataset) if label == 0]
     dataset = torch.utils.data.Subset(full_dataset, indices)
 
@@ -180,7 +177,7 @@ def main(args):
     generator = PatchQuantumGenerator(n_generators).to(device)
 
     # Metrics
-    fid = FrechetInceptionDistance(feature=2048, normalize=True).to(device)
+    fid = FrechetInceptionDistance(feature=192, normalize=True).to(device)
     lpips = LearnedPerceptualImagePatchSimilarity(net_type='alex', normalize=True).to(device)
 
     writer = SummaryWriter('/hpc/archive/G_QSLAB/emanuele.maffezzoli/tensorboard_logs/')
