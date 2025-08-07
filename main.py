@@ -96,6 +96,7 @@ def quantum_circuit(noise, weights):
     # Initialise latent vectors
     for i in range(n_qubits):
         qml.RY(noise[i], wires=i)
+        qml.RX(noise[i + n_qubits], wires=i)
 
     # Repeated layer
     for i in range(q_depth):
@@ -200,7 +201,7 @@ def main(args):
     real_labels = torch.full((batch_size,), 1.0, dtype=torch.float, device=device)
     fake_labels = torch.full((batch_size,), 0.0, dtype=torch.float, device=device)
 
-    fixed_noise = torch.rand(8, n_qubits, device=device) * math.pi / 2
+    fixed_noise = torch.rand(8, n_qubits * 2, device=device) * math.pi / 2
 
     # Collect real images for metrics calculation
     real_images = []
@@ -226,7 +227,7 @@ def main(args):
             real_data = data.to(device)
 
             # Noise following a uniform distribution in range [0,pi/2)
-            noise = torch.rand(batch_size, n_qubits, device=device) * math.pi / 2
+            noise = torch.rand(batch_size, n_qubits * 2, device=device) * math.pi / 2
             fake_data = generator(noise)
 
             # Training the discriminator
@@ -269,7 +270,7 @@ def main(args):
                     # Generate fake images for metrics
                     fake_images = []
                     for _ in range(5000):
-                        noise = torch.rand(batch_size, n_qubits, device=device) * math.pi / 2
+                        noise = torch.rand(batch_size, n_qubits * 2, device=device) * math.pi / 2
                         fake_img = generator(noise).view(1, 1, image_size, image_size)
                         fake_images.append(fake_img.detach())
 
