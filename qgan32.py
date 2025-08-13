@@ -91,17 +91,19 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 @qml.qnode(dev, diff_method="parameter-shift")
 def quantum_circuit(noise, weights):
-    weights = weights.reshape(q_depth, n_qubits)
+    weights = weights.reshape(q_depth, n_qubits, 2)
 
     # Initialise latent vectors
     for i in range(n_qubits):
         qml.RY(noise[i], wires=i)
+        qml.RX(noise[i + n_qubits], wires=i)
 
     # Repeated layer
     for i in range(q_depth):
         # Parameterised layer
         for y in range(n_qubits):
-            qml.RY(weights[i][y], wires=y)
+            qml.RX(weights[i][y][0], wires=y)
+            qml.RY(weights[i][y][1], wires=y)
 
         # Control Z gates
         for y in range(n_qubits - 1):
@@ -132,7 +134,7 @@ class PatchQuantumGenerator(nn.Module):
 
         self.q_params = nn.ParameterList(
             [
-                nn.Parameter(q_delta * torch.rand(q_depth * n_qubits), requires_grad=True)
+                nn.Parameter(q_delta * torch.rand(q_depth * n_qubits * 2), requires_grad=True)
                 for _ in range(n_generators)
             ]
         )
@@ -140,15 +142,18 @@ class PatchQuantumGenerator(nn.Module):
 
     def forward(self, x):
         patch_size = 2 ** (n_qubits - n_a_qubits)
-        images = torch.Tensor(x.size(0), 0).to(device)
 
+        images_list = []
         for params in self.q_params:
-            patches = torch.Tensor(0, patch_size).to(device)
+            patch_list = []
             for elem in x:
                 q_out = partial_measure(elem, params).float().unsqueeze(0)
-                patches = torch.cat((patches, q_out))
+                patch_list.append(q_out)
+            patches = torch.cat(patch_list, dim=0)
 
-            images = torch.cat((images, patches), 1)
+            images_list.append(patches)
+
+        images = torch.cat(images_list, dim=1)
 
         return images
 
@@ -197,7 +202,7 @@ def main(args):
     real_labels = torch.full((batch_size,), 1.0, dtype=torch.float, device=device)
     fake_labels = torch.full((batch_size,), 0.0, dtype=torch.float, device=device)
 
-    fixed_noise = torch.rand(8, n_qubits, device=device) * math.pi / 2
+    fixed_noise = torch.rand(8, n_qubits * 2, device=device) * math.pi / 2
 
     # Collect real images for metrics calculation
     real_images = []
@@ -223,7 +228,7 @@ def main(args):
             real_data = data.to(device)
 
             # Noise following a uniform distribution in range [0,pi/2)
-            noise = torch.rand(batch_size, n_qubits, device=device) * math.pi / 2
+            noise = torch.rand(batch_size, n_qubits * 2, device=device) * math.pi / 2
             fake_data = generator(noise)
 
             # Training the discriminator
@@ -266,7 +271,7 @@ def main(args):
                     # Generate fake images for metrics
                     fake_images = []
                     for _ in range(5000):
-                        noise = torch.rand(batch_size, n_qubits, device=device) * math.pi / 2
+                        noise = torch.rand(batch_size, n_qubits * 2, device=device) * math.pi / 2
                         fake_img = generator(noise).view(1, 1, image_size, image_size)
                         fake_images.append(fake_img.detach())
 
@@ -305,4 +310,5 @@ def main(args):
 if __name__ == "__main__":
     args = get_args()
     print(f"Configuration: {args}")
+    print("XY")
     main(args)
