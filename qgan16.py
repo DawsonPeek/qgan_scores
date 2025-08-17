@@ -32,6 +32,8 @@ def get_args():
     parser.add_argument('--lrG', type=float, default=0.3, help='learning rate for generator')
     parser.add_argument('--lrD', type=float, default=0.01, help='learning rate for discriminator')
     parser.add_argument('--opt', type=str, default='SGD', choices=['SGD', 'Adam'], help='optimizer type')
+    parser.add_argument('--n_generators', type=int, default=4, help='number of sub-generators')
+    parser.add_argument('--n_a_qubits', type=int, default=1, help='number of ancillary qubits')
     return parser.parse_args()
 
 
@@ -78,42 +80,39 @@ class Discriminator(nn.Module):
 # Quantum Generator
 ######################################################################
 
-# Quantum variables
-n_qubits = 7  # Total number of qubits
-n_a_qubits = 1  # Number of ancillary qubits
-q_depth = 6  # Depth of the parameterised quantum circuit
-n_generators = 4  # Number of subgenerators for the patch method
+def create_quantum_circuit(n_qubits, n_a_qubits, q_depth):
 
-# Quantum simulator
-dev = qml.device("default.qubit", wires=n_qubits)
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # Quantum simulator
+    dev = qml.device("default.qubit", wires=n_qubits)
 
+    @qml.qnode(dev, diff_method="parameter-shift")
+    def quantum_circuit(noise, weights):
+        weights = weights.reshape(q_depth, n_qubits, 2)
 
-@qml.qnode(dev, diff_method="parameter-shift")
-def quantum_circuit(noise, weights):
-    weights = weights.reshape(q_depth, n_qubits, 2)
+        # Initialise latent vectors
+        for i in range(n_qubits):
+            qml.RY(noise[i], wires=i)
+            qml.RX(noise[i + n_qubits], wires=i)
 
-    # Initialise latent vectors
-    for i in range(n_qubits):
-        qml.RY(noise[i], wires=i)
-        qml.RX(noise[i + n_qubits], wires=i)
+        # Repeated layer
+        for i in range(q_depth):
+            # Parameterised layer
+            for y in range(n_qubits):
+                qml.RX(weights[i][y][0], wires=y)
+                qml.RY(weights[i][y][1], wires=y)
 
-    # Repeated layer
-    for i in range(q_depth):
-        # Parameterised layer
-        for y in range(n_qubits):
-            qml.RX(weights[i][y][0], wires=y)
-            qml.RY(weights[i][y][1], wires=y)
+            # Control Z gates
+            for y in range(n_qubits - 1):
+                qml.CNOT(wires=[y, y + 1])
 
-        # Control Z gates
-        for y in range(n_qubits - 1):
-            qml.CNOT(wires=[y, y + 1])
+        return qml.probs(wires=list(range(n_qubits)))
 
-    return qml.probs(wires=list(range(n_qubits)))
+    return quantum_circuit
 
 
-def partial_measure(noise, weights):
-    probs = quantum_circuit(noise, weights)
+def partial_measure(noise, weights, quantum_circuit_fn, n_qubits, n_a_qubits):
+    """Partial measurement with configurable ancilla qubits"""
+    probs = quantum_circuit_fn(noise, weights)
     probsgiven0 = probs[: (2 ** (n_qubits - n_a_qubits))]
     probsgiven0 /= torch.sum(probs)
     probsgiven = probsgiven0 / torch.max(probsgiven0)
@@ -123,31 +122,51 @@ def partial_measure(noise, weights):
 class PatchQuantumGenerator(nn.Module):
     """Quantum generator class for the patch method"""
 
-    def __init__(self, n_generators, q_delta=1):
+    def __init__(self, n_generators, n_a_qubits, q_delta=1):
         """
         Args:
             n_generators (int): Number of sub-generators to be used in the patch method.
+            n_a_qubits (int): Number of ancillary qubits.
             q_delta (float, optional): Spread of the random distribution for parameter initialisation.
         """
 
         super().__init__()
 
+        total_pixels = image_size * image_size
+        if total_pixels % n_generators != 0:
+            raise ValueError(f"n_generators ({n_generators}) must divide total_pixels")
+
+        pixels_per_generator = total_pixels // n_generators
+        n_qubits = int(math.log2(pixels_per_generator)) + n_a_qubits
+
+        print(f"Total pixels: {total_pixels}")
+        print(f"Generators: {n_generators}")
+        print(f"Pixels per generator: {pixels_per_generator}")
+        print(f"Qubits per generator: {n_qubits} (gen: {n_qubits - n_a_qubits}, ancilla: {n_a_qubits})")
+
+        self.n_generators = n_generators
+        self.n_qubits = n_qubits
+        self.n_a_qubits = n_a_qubits
+        self.q_depth = 6
+
+        self.quantum_circuit_fn = create_quantum_circuit(n_qubits, n_a_qubits, self.q_depth)
+
         self.q_params = nn.ParameterList(
             [
-                nn.Parameter(q_delta * torch.rand(q_depth * n_qubits * 2), requires_grad=True)
+                nn.Parameter(q_delta * torch.rand(self.q_depth * n_qubits * 2), requires_grad=True)
                 for _ in range(n_generators)
             ]
         )
-        self.n_generators = n_generators
 
     def forward(self, x):
-        patch_size = 2 ** (n_qubits - n_a_qubits)
+        patch_size = 2 ** (self.n_qubits - self.n_a_qubits)
 
         images_list = []
         for params in self.q_params:
             patch_list = []
             for elem in x:
-                q_out = partial_measure(elem, params).float().unsqueeze(0)
+                q_out = partial_measure(elem, params, self.quantum_circuit_fn,
+                                        self.n_qubits, self.n_a_qubits).float().unsqueeze(0)
                 patch_list.append(q_out)
             patches = torch.cat(patch_list, dim=0)
 
@@ -165,6 +184,8 @@ class PatchQuantumGenerator(nn.Module):
 def main(args):
     print(f"Starting training with arguments: {args}")
 
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
     # Setup MNIST dataset
     transform = transforms.Compose([transforms.ToTensor(), transforms.Resize((16, 16))])
 
@@ -178,7 +199,9 @@ def main(args):
 
     # Initialize models
     discriminator = Discriminator().to(device)
-    generator = PatchQuantumGenerator(n_generators).to(device)
+    generator = PatchQuantumGenerator(args.n_generators, args.n_a_qubits).to(device)
+
+    noise_dim = generator.n_qubits * 2
 
     # Metrics
     fid = FrechetInceptionDistance(feature=192, normalize=True).to(device)
@@ -201,7 +224,7 @@ def main(args):
     real_labels = torch.full((batch_size,), 1.0, dtype=torch.float, device=device)
     fake_labels = torch.full((batch_size,), 0.0, dtype=torch.float, device=device)
 
-    fixed_noise = torch.rand(8, n_qubits * 2, device=device) * math.pi / 2
+    fixed_noise = torch.rand(8, noise_dim, device=device) * math.pi / 2
 
     # Collect real images for metrics calculation
     real_images = []
@@ -227,7 +250,7 @@ def main(args):
             real_data = data.to(device)
 
             # Noise following a uniform distribution in range [0,pi/2)
-            noise = torch.rand(batch_size, n_qubits * 2, device=device) * math.pi / 2
+            noise = torch.rand(batch_size, noise_dim, device=device) * math.pi / 2
             fake_data = generator(noise)
 
             # Training the discriminator
@@ -270,7 +293,7 @@ def main(args):
                     # Generate fake images for metrics
                     fake_images = []
                     for _ in range(5000):
-                        noise = torch.rand(batch_size, n_qubits * 2, device=device) * math.pi / 2
+                        noise = torch.rand(batch_size, noise_dim, device=device) * math.pi / 2
                         fake_img = generator(noise).view(1, 1, image_size, image_size)
                         fake_images.append(fake_img.detach())
 
@@ -309,5 +332,4 @@ def main(args):
 if __name__ == "__main__":
     args = get_args()
     print(f"Configuration: {args}")
-    print("XY_CNOT")
     main(args)
