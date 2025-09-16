@@ -110,15 +110,6 @@ def create_quantum_circuit(n_qubits, n_a_qubits, q_depth):
     return quantum_circuit
 
 
-def partial_measure(noise, weights, quantum_circuit_fn, n_qubits, n_a_qubits):
-    """Partial measurement with configurable ancilla qubits"""
-    probs = quantum_circuit_fn(noise, weights)
-    probsgiven0 = probs[: (2 ** (n_qubits - n_a_qubits))]
-    probsgiven0 /= torch.sum(probs)
-    probsgiven = probsgiven0 / torch.max(probsgiven0)
-    return probsgiven
-
-
 class PatchQuantumGenerator(nn.Module):
     """Quantum generator class for the patch method"""
 
@@ -174,8 +165,7 @@ class PatchQuantumGenerator(nn.Module):
         for params in self.q_params:
             patch_list = []
             for elem in x:
-                q_out = partial_measure(elem, params, self.quantum_circuit_fn,
-                                        self.n_qubits, self.n_a_qubits).float().unsqueeze(0)
+                q_out = self.quantum_circuit_fn(elem, params).float().unsqueeze(0)
                 patch_list.append(q_out)
             patches = torch.cat(patch_list, dim=0)
             images_list.append(patches)

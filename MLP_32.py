@@ -34,6 +34,7 @@ def get_args():
     parser.add_argument('--opt', type=str, default='SGD', choices=['SGD', 'Adam'], help='optimizer type')
     parser.add_argument('--n_generators', type=int, default=4, help='number of sub-generators')
     parser.add_argument('--n_a_qubits', type=int, default=1, help='number of ancillary qubits')
+    parser.add_argument('--n_layers', type=int, default=2, help='number of hidden layers')
     return parser.parse_args()
 
 
@@ -45,8 +46,6 @@ def image_prep(images, target_size=32, lpips=False):
     images = images.repeat(1, 3, 1, 1)
 
     if lpips:
-        images = torch.nn.functional.interpolate(images, size=(target_size, target_size), mode='bilinear',
-                                                 align_corners=False)
         images = images.clamp(0, 1).float()
     else:
         images = (images * 255).clamp(0, 255).byte()
@@ -90,8 +89,8 @@ def create_quantum_circuit(n_qubits, n_a_qubits, q_depth):
 
         # Initialise latent vectors
         for i in range(n_qubits):
-            qml.RX(noise[i], wires=i)
-            qml.RY(noise[i + n_qubits], wires=i)
+            qml.RY(noise[i], wires=i)
+            qml.RX(noise[i + n_qubits], wires=i)
 
         # Repeated layer
         for i in range(q_depth):
@@ -120,11 +119,12 @@ def partial_measure(noise, weights, quantum_circuit_fn, n_qubits, n_a_qubits):
 class PatchQuantumGenerator(nn.Module):
     """Quantum generator class for the patch method"""
 
-    def __init__(self, n_generators, n_a_qubits, q_delta=1):
+    def __init__(self, n_generators, n_a_qubits, n_layers=2, q_delta=1):
         """
         Args:
             n_generators (int): Number of sub-generators to be used in the patch method.
             n_a_qubits (int): Number of ancillary qubits.
+            n_layers (int): Number of hidden layers.
             q_delta (float, optional): Spread of the random distribution for parameter initialisation.
         """
 
@@ -141,6 +141,7 @@ class PatchQuantumGenerator(nn.Module):
         self.n_qubits = n_qubits
         self.n_a_qubits = n_a_qubits
         self.q_depth = 6
+        self.patch_size = 2 ** (self.n_qubits - self.n_a_qubits)
 
         self.quantum_circuit_fn = create_quantum_circuit(n_qubits, n_a_qubits, self.q_depth)
 
@@ -150,11 +151,22 @@ class PatchQuantumGenerator(nn.Module):
                 for _ in range(n_generators)
             ]
         )
-        self.n_generators = n_generators
+
+        # Classical neural network
+        layers = []
+
+        layers.append(nn.Linear(image_size * image_size, 500))
+        layers.append(nn.ReLU())
+
+        for _ in range(n_layers):
+            layers.append(nn.Linear(500, 500))
+            layers.append(nn.ReLU())
+
+        layers.append(nn.Linear(500, image_size * image_size))
+
+        self.classical = nn.Sequential(*layers)
 
     def forward(self, x):
-        patch_size = 2 ** (self.n_qubits - self.n_a_qubits)
-
         images_list = []
         for params in self.q_params:
             patch_list = []
@@ -163,12 +175,14 @@ class PatchQuantumGenerator(nn.Module):
                                         self.n_qubits, self.n_a_qubits).float().unsqueeze(0)
                 patch_list.append(q_out)
             patches = torch.cat(patch_list, dim=0)
-
             images_list.append(patches)
 
-        images = torch.cat(images_list, dim=1)
+        output = torch.cat(images_list, dim=1)
 
-        return images
+        image = self.classical(output)
+        image = torch.sigmoid(image)
+
+        return image
 
 
 ######################################################################
@@ -194,7 +208,7 @@ def main(args):
 
     # Initialize models
     discriminator = Discriminator().to(device)
-    generator = PatchQuantumGenerator(args.n_generators, args.n_a_qubits).to(device)
+    generator = PatchQuantumGenerator(args.n_generators, args.n_a_qubits, args.n_layers).to(device)
 
     noise_dim = generator.n_qubits * 2
 
@@ -302,8 +316,8 @@ def main(args):
 
                     # Update LPIPS - batch calculation
                     half = len(fake_images_lpips) // 2
-                    batch1 = fake_images_lpips[:half]  # Prima metà
-                    batch2 = fake_images_lpips[half:half * 2]  # Seconda metà
+                    batch1 = fake_images_lpips[:half]
+                    batch2 = fake_images_lpips[half:half * 2]
                     avg_lpips = lpips(batch1, batch2).item()
 
                     # Log metrics to TensorBoard
@@ -326,4 +340,5 @@ def main(args):
 
 if __name__ == "__main__":
     args = get_args()
+    print(f"Configuration: {args}")
     main(args)

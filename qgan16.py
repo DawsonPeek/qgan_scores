@@ -81,7 +81,6 @@ class Discriminator(nn.Module):
 ######################################################################
 
 def create_quantum_circuit(n_qubits, n_a_qubits, q_depth):
-
     # Quantum simulator
     dev = qml.device("default.qubit", wires=n_qubits)
 
@@ -103,7 +102,7 @@ def create_quantum_circuit(n_qubits, n_a_qubits, q_depth):
 
             # Control Z gates
             for y in range(n_qubits - 1):
-                qml.CNOT(wires=[y, y + 1])
+                qml.CZ(wires=[y, y + 1])
 
         return qml.probs(wires=list(range(n_qubits)))
 
@@ -138,11 +137,6 @@ class PatchQuantumGenerator(nn.Module):
 
         pixels_per_generator = total_pixels // n_generators
         n_qubits = int(math.log2(pixels_per_generator)) + n_a_qubits
-
-        print(f"Total pixels: {total_pixels}")
-        print(f"Generators: {n_generators}")
-        print(f"Pixels per generator: {pixels_per_generator}")
-        print(f"Qubits per generator: {n_qubits} (gen: {n_qubits - n_a_qubits}, ancilla: {n_a_qubits})")
 
         self.n_generators = n_generators
         self.n_qubits = n_qubits
@@ -189,7 +183,8 @@ def main(args):
     # Setup MNIST dataset
     transform = transforms.Compose([transforms.ToTensor(), transforms.Resize((16, 16))])
 
-    full_dataset = MNIST(root='/hpc/archive/G_QSLAB/emanuele.maffezzoli/data/', train=True, download=True, transform=transform)
+    full_dataset = MNIST(root='/hpc/archive/G_QSLAB/emanuele.maffezzoli/data/', train=True, download=True,
+                         transform=transform)
     indices = [i for i, (_, label) in enumerate(full_dataset) if label == 0]
     dataset = torch.utils.data.Subset(full_dataset, indices)
 
